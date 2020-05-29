@@ -6,15 +6,16 @@ import numpy as np
 import time
 import os
 import re
-import sys
 
 
 class CommonProperty:
-    def __init__(self, model_depth_range, conv_size_range, conv_depth_range, conv_stride_range, selection_rule, mutation_num, best_parent_num, num_classes):
+    def __init__(self, model_depth_range, conv_size_range, conv_depth_range, conv_stride_range, num_population, selection_rule, mutation_num, best_parent_num,
+                 num_classes):
         self.model_depth_range = model_depth_range
         self.conv_size_range = conv_size_range
         self.conv_depth_range = conv_depth_range
         self.conv_stride_range = conv_stride_range
+        self.num_population = num_population
         self.selection_rule = selection_rule
         self.mutation_num = mutation_num
         self.best_parent_num = best_parent_num
@@ -51,6 +52,8 @@ def list_getter(dir_name, extension, must_include=None):
                     else:
                         file_list.append(os.path.join(path, name))
         sort_nicely(file_list)
+    if not file_list:
+        raise ValueError("list is empty")
     return file_list
 
 
@@ -111,10 +114,9 @@ def train_and_test(sess, max_epoch, train_data, test_data, model, lr, current_ep
 
 
 def fitness_fn(total_population):
-    accuracy_factor = 0.7  # define the importance of accuracy between 0.0 to 1.0
-    parameter_factor = 1 - accuracy_factor
     max_param = total_population["parameter"].max()
-    total_population["fitness"] = total_population["accuracy"] * accuracy_factor + (1 - total_population["parameter"] / max_param) * parameter_factor
+    fitness = total_population["accuracy"] + (1.0 - (total_population["parameter"] / max_param))
+    total_population["fitness"] = fitness
     return total_population.sort_values("fitness", ascending=False).reset_index(drop=True)  # sort in descending order
 
 
@@ -136,7 +138,7 @@ def add_or_drop_child(child_actual_bit, offspring_pool, total_gene, common):
     return offspring_pool
 
 
-def crossover(total_population, common):
+def crossover(total_population, crossover_num, common):
     def select_parent(total_population, cumulative_probability, index_table):
         random_prob = np.random.uniform()
         for idx, prob in enumerate(cumulative_probability):
@@ -153,13 +155,12 @@ def crossover(total_population, common):
             end = start + bit_window_size
             return actual_bit[start:end], [start, end]
 
-    population_number = len(total_population)
-    index_table = [0] + list(accumulate([int(p * population_number) for p in common.selection_rule["proportion"]]))
+    total_population_num = common.num_population
+    index_table = [0] + list(accumulate([int(p * total_population_num) for p in common.selection_rule["proportion"]]))
     cumulative_probability = list(accumulate(common.selection_rule["probability"]))
 
     offspring_pool = []
-    should_have_child = True
-    while should_have_child:
+    while crossover_num - len(offspring_pool) > 0:
         parent1 = select_parent(total_population, cumulative_probability, index_table)
         parent2 = select_parent(total_population, cumulative_probability, index_table)
 
@@ -190,21 +191,19 @@ def crossover(total_population, common):
         total_gene = list(total_population["model_bit"].values)
         offspring_pool = add_or_drop_child(child1_actual_bit, offspring_pool, total_gene, common)
         offspring_pool = add_or_drop_child(child2_actual_bit, offspring_pool, total_gene, common)
-        if len(offspring_pool) >= population_number - common.best_parent_num - common.mutation_num:
-            should_have_child = False
     return offspring_pool
 
 
 def mutation(total_population, common):
-    per_conv_bit_num = common.per_conv_bit_num
-    parent = total_population.sample()
-    p_depth = parent["model_length"].values[0]
-
-    p_actual_bit = list(parent["model_bit"].values[0][int(p_depth * common.per_conv_bit_num) * -1:])
-    # select a random index among actual bits
-    rnd_idx = np.random.randint(low=0, high=len(p_actual_bit))
-    p_actual_bit[rnd_idx] = '0' if p_actual_bit[rnd_idx] == '1' else '1'
-    c_actual_bit = "".join(p_actual_bit)
-    total_gene = list(total_population["model_bit"].values)
-    mutated_gene = add_or_drop_child(c_actual_bit, [], total_gene, common)
+    mutated_gene = []
+    while common.mutation_num - len(mutated_gene) > 0:
+        parent = total_population.sample()
+        p_depth = parent["model_length"].values[0]
+        p_actual_bit = list(parent["model_bit"].values[0][int(p_depth * common.per_conv_bit_num) * -1:])
+        # select a random index among actual bits
+        rnd_idx = np.random.randint(low=0, high=len(p_actual_bit))
+        p_actual_bit[rnd_idx] = '0' if p_actual_bit[rnd_idx] == '1' else '1'
+        c_actual_bit = "".join(p_actual_bit)
+        total_gene = list(total_population["model_bit"].values)
+        mutated_gene = add_or_drop_child(c_actual_bit, mutated_gene, total_gene, common)
     return mutated_gene
